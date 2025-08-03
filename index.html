@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interfaz Simple para Rococo</title>
+    <!-- Pico.css para un estilo limpio sin esfuerzo -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+    <style>
+        body {
+            padding-bottom: 5rem;
+        }
+        main.container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        #log {
+            background-color: var(--pico-card-background-color);
+            border: 1px solid var(--pico-card-border-color);
+            border-radius: var(--pico-border-radius);
+            padding: 1rem;
+            margin-top: 1rem;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.8em;
+            white-space: pre-wrap;
+        }
+        .status-dot {
+            height: 12px;
+            width: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .dot-red { background-color: #ff4d4d; }
+        .dot-green { background-color: #4caf50; }
+        .grid > article {
+            padding-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1><img src="https://polkadot.js.org/favicon.svg" width="32" style="vertical-align: middle; margin-right: 10px;"> Interfaz para Rococo</h1>
+            <p>Una página estática para interactuar con la red de pruebas Rococo usando la API de Polkadot-JS.</p>
+        </header>
+
+        <!-- SECCIÓN 1: CONEXIÓN AL NODO -->
+        <article>
+            <header>
+                <strong>1. Conexión al Nodo</strong>
+            </header>
+            <div class="grid">
+                <input type="text" id="nodeUrl" value="wss://rococo-rpc.polkadot.io">
+                <button id="connectButton">Conectar</button>
+            </div>
+            <footer>
+                <p>
+                    <strong>Estado:</strong> 
+                    <span id="connectionStatus">
+                        <span class="status-dot dot-red"></span>Desconectado
+                    </span>
+                </p>
+                <div id="chainInfo" style="display: none;">
+                    <p><strong>Cadena:</strong> <span id="chainName"></span></p>
+                    <p><strong>Versión del Nodo:</strong> <span id="nodeVersion"></span></p>
+                    <p><strong>Último Bloque:</strong> <span id="latestBlock"></span></p>
+                </div>
+            </footer>
+        </article>
+
+        <!-- SECCIÓN 2: CONSULTA DE SALDO -->
+        <article>
+            <header>
+                <strong>2. Consultar Saldo de una Cuenta</strong>
+            </header>
+            <label for="accountAddress">Dirección de la cuenta</label>
+            <input type="text" id="accountAddress" placeholder="5G... o dirección de Rococo">
+            <button id="getBalanceButton" disabled>Obtener Saldo</button>
+            <div id="balanceInfo" style="margin-top: 1rem;"></div>
+        </article>
+
+        <!-- SECCIÓN 3: INTERACCIÓN CON WALLET -->
+        <article>
+            <header>
+                <strong>3. Realizar una Transferencia (Requiere Extensión)</strong>
+            </header>
+            <button id="connectWalletButton" disabled>Conectar Wallet</button>
+            <div id="walletSection" style="display: none; margin-top: 1rem;">
+                <label for="accountSelect">Selecciona una cuenta:</label>
+                <select id="accountSelect"></select>
+
+                <label for="recipientAddress">Dirección del destinatario</label>
+                <input type="text" id="recipientAddress" placeholder="5G...">
+
+                <label for="amount">Monto a enviar (en ROC)</label>
+                <input type="number" id="amount" placeholder="0.01">
+
+                <button id="transferButton">Enviar Transferencia</button>
+            </div>
+        </article>
+
+        <!-- SECCIÓN 4: REGISTRO DE EVENTOS -->
+        <article>
+            <header><strong>Registro de Eventos</strong></header>
+            <div id="log"></div>
+        </article>
+        
+    </main>
+
+    <!--
+      El código TypeScript/JavaScript va aquí.
+      Usamos type="module" para poder usar imports/exports de ES6.
+      Las librerías de Polkadot-JS se importan directamente desde un CDN.
+    -->
+    <script type="module">
+        // Importar las librerías necesarias desde el CDN de Polkadot-JS
+        import { ApiPromise, WsProvider } from 'https://cdn.jsdelivr.net/npm/@polkadot/api@10.12.2/+esm';
+        import { web3Accounts, web3Enable, web3FromSource } from 'https://cdn.jsdelivr.net/npm/@polkadot/extension-dapp@0.46.9/+esm';
+
+        // --- REFERENCIAS A ELEMENTOS DEL DOM ---
+        const connectButton = document.getElementById('connectButton');
+        const nodeUrlInput = document.getElementById('nodeUrl');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const chainInfoDiv = document.getElementById('chainInfo');
+        const chainNameSpan = document.getElementById('chainName');
+        const nodeVersionSpan = document.getElementById('nodeVersion');
+        const latestBlockSpan = document.getElementById('latestBlock');
+        const logDiv = document.getElementById('log');
+
+        const getBalanceButton = document.getElementById('getBalanceButton');
+        const accountAddressInput = document.getElementById('accountAddress');
+        const balanceInfoDiv = document.getElementById('balanceInfo');
+
+        const connectWalletButton = document.getElementById('connectWalletButton');
+        const walletSection = document.getElementById('walletSection');
+        const accountSelect = document.getElementById('accountSelect');
+        const recipientAddressInput = document.getElementById('recipientAddress');
+        const amountInput = document.getElementById('amount');
+        const transferButton = document.getElementById('transferButton');
+        
+        // --- ESTADO GLOBAL DE LA APLICACIÓN ---
+        let api;
+        let connectedAccount = null;
+
+        // --- FUNCIONES DE UTILIDAD ---
+        const log = (message) => {
+            console.log(message);
+            logDiv.innerHTML += `> ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        };
+
+        const setStatus = (connected) => {
+            if (connected) {
+                connectionStatus.innerHTML = '<span class="status-dot dot-green"></span>Conectado';
+                getBalanceButton.disabled = false;
+                connectWalletButton.disabled = false;
+            } else {
+                connectionStatus.innerHTML = '<span class="status-dot dot-red"></span>Desconectado';
+                getBalanceButton.disabled = true;
+                connectWalletButton.disabled = true;
+                chainInfoDiv.style.display = 'none';
+                walletSection.style.display = 'none';
+            }
+        };
+
+        // --- LÓGICA PRINCIPAL ---
+
+        // 1. Conexión al nodo
+        async function connectNode() {
+            const url = nodeUrlInput.value;
+            log(`Conectando a ${url}...`);
+            connectButton.setAttribute('aria-busy', 'true');
+            connectButton.disabled = true;
+
+            try {
+                const provider = new WsProvider(url);
+                api = await ApiPromise.create({ provider });
+
+                await api.isReady;
+
+                const [chain, nodeName, nodeVersion] = await Promise.all([
+                    api.rpc.system.chain(),
+                    api.rpc.system.name(),
+                    api.rpc.system.version(),
+                ]);
+
+                chainNameSpan.textContent = chain;
+                nodeVersionSpan.textContent = `${nodeName} v${nodeVersion}`;
+                chainInfoDiv.style.display = 'block';
+                setStatus(true);
+                log(`Conectado exitosamente a la cadena ${chain}.`);
+                
+                // Suscribirse a nuevos bloques
+                api.rpc.chain.subscribeNewHeads((header) => {
+                    latestBlockSpan.textContent = `#${header.number}`;
+                });
+
+            } catch (error) {
+                log(`Error al conectar: ${error.message}`);
+                setStatus(false);
+            } finally {
+                connectButton.removeAttribute('aria-busy');
+                connectButton.disabled = false;
+            }
+        }
+
+        // 2. Obtener saldo
+        async function getBalance() {
+            const address = accountAddressInput.value;
+            if (!address) {
+                log("Por favor, introduce una dirección válida.");
+                return;
+            }
+
+            log(`Obteniendo saldo para la cuenta: ${address}`);
+            getBalanceButton.setAttribute('aria-busy', 'true');
+
+            try {
+                const { data: { free, reserved } } = await api.query.system.account(address);
+                const decimals = api.registry.chainDecimals[0];
+                const tokenSymbol = api.registry.chainTokens[0];
+                
+                const freeFormatted = parseFloat(free.toBigInt()) / Math.pow(10, decimals);
+                const reservedFormatted = parseFloat(reserved.toBigInt()) / Math.pow(10, decimals);
+                
+                balanceInfoDiv.innerHTML = `
+                    <p><strong>Saldo Libre:</strong> ${freeFormatted.toFixed(4)} ${tokenSymbol}</p>
+                    <p><strong>Saldo Reservado:</strong> ${reservedFormatted.toFixed(4)} ${tokenSymbol}</p>
+                `;
+                log("Saldo obtenido correctamente.");
+            } catch (error) {
+                log(`Error al obtener el saldo: ${error.message}`);
+                balanceInfoDiv.innerHTML = `<p style="color: var(--pico-color-red-500);">No se pudo obtener el saldo.</p>`;
+            } finally {
+                getBalanceButton.removeAttribute('aria-busy');
+            }
+        }
+
+        // 3. Conectar a la extensión de wallet
+        async function connectWallet() {
+            try {
+                const extensions = await web3Enable('Mi DApp de Rococo');
+                if (extensions.length === 0) {
+                    log('No se encontró ninguna extensión de wallet. Por favor, instala Polkadot-JS o Talisman.');
+                    return;
+                }
+
+                const accounts = await web3Accounts();
+                if (accounts.length === 0) {
+                    log('No se encontraron cuentas. Asegúrate de que tu wallet está configurada y tienes cuentas en ella.');
+                    return;
+                }
+
+                accountSelect.innerHTML = accounts.map(acc => `<option value="${acc.address}">${acc.meta.name} (${acc.address.slice(0, 6)}...)</option>`).join('');
+                connectedAccount = accounts[0]; // Seleccionar la primera por defecto
+                
+                accountSelect.addEventListener('change', (e) => {
+                    connectedAccount = accounts.find(acc => acc.address === e.target.value);
+                    log(`Cuenta seleccionada: ${connectedAccount.meta.name}`);
+                });
+                
+                walletSection.style.display = 'block';
+                log(`Wallet conectada. ${accounts.length} cuentas encontradas.`);
+
+            } catch (error) {
+                log(`Error al conectar la wallet: ${error.message}`);
+            }
+        }
+
+        // 4. Realizar la transferencia
+        async function makeTransfer() {
+            if (!connectedAccount) {
+                log("Por favor, conecta tu wallet y selecciona una cuenta primero.");
+                return;
+            }
+
+            const recipient = recipientAddressInput.value;
+            const amount = parseFloat(amountInput.value);
+
+            if (!recipient || isNaN(amount) || amount <= 0) {
+                log("Por favor, introduce un destinatario y un monto válidos.");
+                return;
+            }
+
+            log("Preparando la transferencia...");
+            transferButton.setAttribute('aria-busy', 'true');
+
+            try {
+                const injector = await web3FromSource(connectedAccount.meta.source);
+                api.setSigner(injector.signer);
+
+                const decimals = api.registry.chainDecimals[0];
+                const amountInPlank = BigInt(amount * Math.pow(10, decimals));
+
+                const tx = api.tx.balances.transferKeepAlive(recipient, amountInPlank);
+                
+                log("Esperando firma y envío de la transacción...");
+
+                const unsub = await tx.signAndSend(connectedAccount.address, ({ status, events, dispatchError }) => {
+                    log(`Estado de la transacción: ${status.type}`);
+
+                    if (status.isInBlock) {
+                        log(`Transacción incluida en el bloque ${status.asInBlock}`);
+                        
+                        events.forEach(({ event: { data, method, section }}) => {
+                           log(`\tEvento: ${section}.${method}`);
+                        });
+                    }
+
+                    if (status.isFinalized) {
+                        log(`Transacción finalizada en el bloque ${status.asFinalized}`);
+                        
+                        if (dispatchError) {
+                            if (dispatchError.isModule) {
+                                const decoded = api.registry.findMetaError(dispatchError.asModule);
+                                const { docs, name, section } = decoded;
+                                log(`Error: ${section}.${name}: ${docs.join(' ')}`);
+                            } else {
+                                log(`Error: ${dispatchError.toString()}`);
+                            }
+                        } else {
+                            log("Transferencia completada con éxito.");
+                        }
+                        
+                        unsub(); // Desuscribirse
+                        transferButton.removeAttribute('aria-busy');
+                    }
+                });
+
+            } catch (error) {
+                log(`Error al realizar la transferencia: ${error.message}`);
+                transferButton.removeAttribute('aria-busy');
+            }
+        }
+
+        // --- ASIGNACIÓN DE EVENTOS ---
+        connectButton.addEventListener('click', connectNode);
+        getBalanceButton.addEventListener('click', getBalance);
+        connectWalletButton.addEventListener('click', connectWallet);
+        transferButton.addEventListener('click', makeTransfer);
+        
+        // --- INICIALIZACIÓN ---
+        log("Página cargada. Por favor, conecta a un nodo para empezar.");
+        
+    </script>
+</body>
+</html>
